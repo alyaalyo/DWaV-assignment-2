@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Traffic Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #070b18; color: #cdd6f4; font-family: 'Courier New', monospace; overflow: hidden; height: 100vh; }
+
+  #app { display: flex; height: 100vh; }
+
+  #left { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #globe-wrap { flex: 1; position: relative; overflow: hidden; }
+  #globe-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+
+  #timeline-wrap {
+    height: 110px;
+    background: #0b1025;
+    border-top: 1px solid #1e3a5f;
+    padding: 6px 14px 8px;
+    flex-shrink: 0;
+  }
+  #timeline-wrap h3 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #4a90d9;
+    margin-bottom: 4px;
+  }
+  #timeline-canvas { display: block; width: 100%; }
+
+  #sidebar {
+    width: 270px;
+    flex-shrink: 0;
+    background: #0b1025;
+    border-left: 1px solid #1e3a5f;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .s-block {
+    padding: 12px;
+    border-bottom: 1px solid #1e3a5f;
+    flex-shrink: 0;
+  }
+  .s-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #4a90d9;
+    margin-bottom: 8px;
+  }
+
+  .counters { display: flex; gap: 10px; }
+  .counter { flex: 1; }
+  .counter-val { font-size: 30px; font-weight: bold; color: #00d4ff; line-height: 1; }
+  .counter-val.red { color: #ff5555; }
+  .counter-lbl { font-size: 9px; color: #555; margin-top: 2px; }
+
+  #ip-section {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 12px 6px;
+  }
+  #ip-section .s-title { margin-bottom: 6px; }
+  #ip-list { flex: 1; overflow-y: auto; }
+  #ip-list::-webkit-scrollbar { width: 4px; }
+  #ip-list::-webkit-scrollbar-track { background: #0b1025; }
+  #ip-list::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+
+  .ip-row { margin-bottom: 7px; }
+  .ip-meta { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
+  .ip-rank { width: 16px; font-size: 9px; color: #4a90d9; }
+  .ip-addr { flex: 1; font-size: 10px; color: #cdd6f4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ip-cnt { font-size: 10px; color: #666; }
+  .ip-bar-bg { height: 3px; background: #1a2f4a; border-radius: 2px; }
+  .ip-bar-fill { height: 100%; background: linear-gradient(90deg, #0066cc, #00d4ff); border-radius: 2px; transition: width 0.4s; }
+
+  #status {
+    padding: 5px 12px;
+    background: #070b18;
+    border-top: 1px solid #1e3a5f;
+    font-size: 9px;
+    color: #444;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  #dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #333;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  #dot.on { background: #00ff88; animation: blink 1.5s infinite; }
+  #dot.err { background: #ff5555; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  #tooltip {
+    position: fixed;
+    background: rgba(7,11,24,0.95);
+    border: 1px solid #1e3a5f;
+    padding: 7px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1.6;
+    pointer-events: none;
+    display: none;
+    z-index: 999;
+    max-width: 220px;
+    color: #cdd6f4;
+  }
+  #tooltip b { color: #00d4ff; }
+  #tooltip .warn { color: #ff5555; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="globe-wrap"></div>
+    <div id="timeline-wrap">
+      <h3>Activity Timeline &mdash; packets per 10 s</h3>
+      <canvas id="timeline-canvas"></canvas>
+    </div>
+  </div>
+  <div id="sidebar">
+    <div class="s-block">
+      <div class="s-title">Network Traffic Monitor</div>
+      <div class="counters">
+        <div class="counter">
+          <div class="counter-val" id="total">0</div>
+          <div class="counter-lbl">TOTAL PACKETS</div>
+        </div>
+        <div class="counter">
+          <div class="counter-val red" id="susp">0</div>
+          <div class="counter-lbl">SUSPICIOUS</div>
+        </div>
+      </div>
+    </div>
+    <div id="ip-section">
+      <div class="s-title">Top Source IPs</div>
+      <div id="ip-list"></div>
+    </div>
+    <div id="status">
+      <div id="dot"></div>
+      <span id="status-txt">Connecting&hellip;</span>
+    </div>
+  </div>
+</div>
+<div id="tooltip"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Scene ──────────────────────────────────────────────────────────────────
+const wrap = document.getElementById('globe-wrap');
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 0.1, 1000);
+camera.position.z = 2.6;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+wrap.appendChild(renderer.domElement);
+
+// Lights
+scene.add(new THREE.AmbientLight(0x404060, 2));
+const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+sun.position.set(5, 3, 5);
+scene.add(sun);
+
+// Stars
+const starBuf = new Float32Array(9000);
+for (let i = 0; i < 9000; i++) starBuf[i] = (Math.random() - 0.5) * 400;
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starBuf, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.15 })));
+
+// Earth
+const earthGeo = new THREE.SphereGeometry(1, 64, 64);
+const loader = new THREE.TextureLoader();
+const earthMat = new THREE.MeshPhongMaterial({ specular: 0x222222, shininess: 12 });
+loader.load(
+  '/static/earth-day.jpg',
+  tex => { earthMat.map = tex; earthMat.needsUpdate = true; },
+  undefined,
+  () => { earthMat.color.set(0x1a6690); }  // fallback color
+);
+const earth = new THREE.Mesh(earthGeo, earthMat);
+scene.add(earth);
+
+// Atmosphere glow
+const atmGeo = new THREE.SphereGeometry(1.025, 64, 64);
+const atmMat = new THREE.MeshPhongMaterial({ color: 0x0055aa, transparent: true, opacity: 0.08, side: THREE.BackSide });
+scene.add(new THREE.Mesh(atmGeo, atmMat));
+
+// ── Traffic Points ─────────────────────────────────────────────────────────
+const MAX = 5000;
+const pos  = new Float32Array(MAX * 3);
+const col  = new Float32Array(MAX * 3);
+const ptGeo = new THREE.BufferGeometry();
+ptGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+ptGeo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+ptGeo.setDrawRange(0, 0);
+const ptMat = new THREE.PointsMaterial({ size: 0.02, vertexColors: true, transparent: true, opacity: 0.9, sizeAttenuation: true });
+const ptMesh = new THREE.Points(ptGeo, ptMat);
+scene.add(ptMesh);
+
+let ptCount = 0;
+const ptMeta = [];  // { ip, lat, lon, timestamp, suspicious }
+
+function latLonTo3D(lat, lon, r) {
+  const phi   = (90 - lat) * (Math.PI / 180);
+  const theta = (lon + 180) * (Math.PI / 180);
+  return new THREE.Vector3(
+    -r * Math.sin(phi) * Math.cos(theta),
+     r * Math.cos(phi),
+     r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+function addPoint(lat, lon, suspicious, ip, timestamp) {
+  if (ptCount >= MAX) return;
+  const v = latLonTo3D(lat, lon, 1.008);
+  const i = ptCount * 3;
+  pos[i]   = v.x; pos[i+1] = v.y; pos[i+2] = v.z;
+  if (suspicious) {
+    col[i] = 1; col[i+1] = 0.2; col[i+2] = 0.2;
+  } else {
+    col[i] = 0.0; col[i+1] = 0.82; col[i+2] = 1.0;
+  }
+  ptMeta.push({ ip, lat, lon, timestamp, suspicious });
+  ptCount++;
+  ptGeo.setDrawRange(0, ptCount);
+  ptGeo.attributes.position.needsUpdate = true;
+  ptGeo.attributes.color.needsUpdate    = true;
+}
+
+// ── Controls ───────────────────────────────────────────────────────────────
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping  = true;
+controls.dampingFactor  = 0.05;
+controls.minDistance    = 1.4;
+controls.maxDistance    = 6;
+controls.autoRotate     = true;
+controls.autoRotateSpeed = 0.25;
+
+wrap.addEventListener('mouseenter', () => controls.autoRotate = false);
+wrap.addEventListener('mouseleave', () => { controls.autoRotate = true; hideTooltip(); });
+
+// ── Hover Tooltip ──────────────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points = { threshold: 0.03 };
+const mouse   = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+
+function hideTooltip() { tooltip.style.display = 'none'; }
+
+renderer.domElement.addEventListener('mousemove', e => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x =  ((e.clientX - rect.left)  / rect.width)  * 2 - 1;
+  mouse.y = -((e.clientY - rect.top)   / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(ptMesh);
+  if (hits.length > 0 && hits[0].index < ptMeta.length) {
+    const d = ptMeta[hits[0].index];
+    const ts = new Date(d.timestamp * 1000).toISOString().replace('T',' ').slice(0,19) + ' UTC';
+    tooltip.innerHTML =
+      `<b>${d.ip}</b><br>` +
+      `${d.lat.toFixed(2)}&deg; N, ${d.lon.toFixed(2)}&deg; E<br>` +
+      `${ts}<br>` +
+      (d.suspicious ? '<span class="warn">&#9888; SUSPICIOUS</span>' : 'Normal traffic');
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top  = (e.clientY - 10) + 'px';
+  } else {
+    hideTooltip();
+  }
+});
+
+// ── Animate ────────────────────────────────────────────────────────────────
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+window.addEventListener('resize', () => {
+  camera.aspect = wrap.clientWidth / wrap.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+  resizeTimeline();
+});
+
+// ── Timeline Chart ─────────────────────────────────────────────────────────
+const tlCanvas = document.getElementById('timeline-canvas');
+const tlCtx    = tlCanvas.getContext('2d');
+const buckets  = {};   // bucketIndex → count
+let   minTs    = null;
+
+function resizeTimeline() {
+  const wrap2 = document.getElementById('timeline-wrap');
+  tlCanvas.width  = wrap2.clientWidth - 28;
+  tlCanvas.height = wrap2.clientHeight - 26;
+}
+resizeTimeline();
+
+function drawTimeline() {
+  const w = tlCanvas.width, h = tlCanvas.height;
+  tlCtx.clearRect(0, 0, w, h);
+
+  const keys = Object.keys(buckets).map(Number).sort((a,b)=>a-b);
+  if (!keys.length) return;
+
+  const maxB = Math.max(...keys);
+  const maxV = Math.max(...keys.map(k => buckets[k]));
+  if (!maxV) return;
+
+  const totalBuckets = maxB + 1;
+  const barW = Math.max(1, (w - 2) / Math.max(totalBuckets, 60));
+  const pad  = 2;
+
+  keys.forEach(k => {
+    const v    = buckets[k];
+    const barH = (v / maxV) * (h - pad);
+    const x    = pad + k * barW;
+    tlCtx.fillStyle = `rgba(0, 180, 255, ${0.5 + 0.5 * (v / maxV)})`;
+    tlCtx.fillRect(x, h - barH, Math.max(barW - 1, 1), barH);
+  });
+
+  // Y-axis max label
+  tlCtx.fillStyle = '#444';
+  tlCtx.font = '9px Courier New';
+  tlCtx.fillText(maxV, 2, 9);
+}
+
+// ── Stats sidebar ──────────────────────────────────────────────────────────
+let total = 0, suspicious = 0;
+const ipCounts = {};
+
+function updateStats(d) {
+  total++;
+  if (d.suspicious) suspicious++;
+  document.getElementById('total').textContent = total;
+  document.getElementById('susp').textContent  = suspicious;
+
+  ipCounts[d.ip] = (ipCounts[d.ip] || 0) + 1;
+
+  if (minTs === null) minTs = d.timestamp;
+  const b = Math.floor((d.timestamp - minTs) / 10);
+  buckets[b] = (buckets[b] || 0) + 1;
+
+  if (total % 30 === 0 || total <= 5) {
+    renderIPList();
+    drawTimeline();
+  }
+}
+
+function renderIPList() {
+  const sorted = Object.entries(ipCounts).sort((a,b) => b[1] - a[1]).slice(0, 15);
+  const maxC   = sorted[0] ? sorted[0][1] : 1;
+  document.getElementById('ip-list').innerHTML = sorted.map(([ip, cnt], i) => `
+    <div class="ip-row">
+      <div class="ip-meta">
+        <span class="ip-rank">${i+1}</span>
+        <span class="ip-addr">${ip}</span>
+        <span class="ip-cnt">${cnt}</span>
+      </div>
+      <div class="ip-bar-bg">
+        <div class="ip-bar-fill" style="width:${(cnt/maxC*100).toFixed(1)}%"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── SSE ────────────────────────────────────────────────────────────────────
+const dot    = document.getElementById('dot');
+const stxt   = document.getElementById('status-txt');
+const evtSrc = new EventSource('/stream');
+
+evtSrc.onopen = () => {
+  dot.className  = 'on';
+  stxt.textContent = 'Connected — awaiting data\u2026';
+};
+evtSrc.onerror = () => {
+  dot.className  = 'err';
+  stxt.textContent = 'Connection lost — retrying\u2026';
+};
+evtSrc.onmessage = e => {
+  const d = JSON.parse(e.data);
+  addPoint(d.lat, d.lon, d.suspicious, d.ip, d.timestamp);
+  updateStats(d);
+  stxt.textContent = `Live \u2014 ${total} packets`;
+};
+</script>
+</body>
+</html>
